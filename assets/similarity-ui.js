@@ -45,6 +45,7 @@
   function allGroups() { return [...(window.SFI_SIMILARITY?.groups || []), ...custom]; }
   function questionsFor(group) { return group.questionIds.map(id => byId.get(id)).filter(Boolean); }
   function matchingGroups(qid, kind) { return allGroups().filter(group => (!kind || group.kind === kind) && group.questionIds.includes(qid)); }
+  function relatedQuestions(qid, kind) { return [...new Set(matchingGroups(qid, kind).flatMap(group => group.questionIds))].filter(id => id !== qid && byId.has(id)).map(id => byId.get(id)); }
   function label(kind) { return kind === 'answers' ? '相似答案' : '相似題目'; }
   function message(text) { $('similarityMessage').textContent = text; }
   function saveCustom() { try { localStorage.setItem(customKey, JSON.stringify(custom)); return true; } catch { message('瀏覽器無法保存自訂分組，請匯出備份。'); return false; } }
@@ -140,9 +141,19 @@
     tracker.record(q.id, active.answers[index], q.answer, `${active.similarityAttemptId}:${q.id}`);
   };
   function openRelated(kind, qid) {
-    const beforeSubmit = session?.mode === 'exam' && !session.checked[session.index];
-    if (beforeSubmit) return;
-    open(kind, qid, null, true);
+    if (!session || session.questions[session.index]?.id !== qid || session.mode === 'exam' && !session.checked[session.index]) return;
+    const panel = $('similarityRelatedPanel');
+    if (!panel) return;
+    const buttons = $('quiz').querySelectorAll('[data-sim-related]');
+    const collapse = () => { panel.classList.add('hidden'); panel.innerHTML = ''; panel.dataset.kind = ''; buttons.forEach(button => button.setAttribute('aria-expanded', 'false')); };
+    if (!panel.classList.contains('hidden') && panel.dataset.kind === kind) { collapse(); return; }
+    const qs = relatedQuestions(qid, kind);
+    panel.dataset.kind = kind;
+    panel.setAttribute('aria-label', label(kind));
+    panel.innerHTML = `<div class="similarity-related-heading"><strong>${label(kind)}（${qs.length} 題）</strong><button class="button ghost" type="button" id="similarityRelatedClose">收起</button></div><div class="similarity-related-list">${qs.map(q => { const opts = choices(q.text); return `<article class="similarity-related-question" data-related-question="${escape(q.id)}"><div class="q-number">${escape(q.section)}・題庫第 ${q.number} 題</div><h4>${highlightPrompt(opts[0])}</h4><div class="similarity-related-answer">正確答案 ${LETTERS[q.answer - 1]}：${escape(opts[q.answer])}</div></article>`; }).join('') || '<p class="hint">目前沒有其他可對照的題目。</p>'}</div>`;
+    panel.classList.remove('hidden');
+    buttons.forEach(button => button.setAttribute('aria-expanded', String(button.dataset.simRelated === kind)));
+    $('similarityRelatedClose').onclick = collapse;
   }
   const originalRenderQuestion = renderQuestion;
   renderQuestion = function() {
@@ -150,7 +161,7 @@
     if (!session) return;
     const q = session.questions[session.index], examHidden = session.mode === 'exam' && !session.checked[session.index];
     const box = document.createElement('div'); box.className = 'similarity-quiz-links';
-    box.innerHTML = `<span class="hint">容易和其他題目的選項看混？</span><div class="actions"><button class="button secondary" data-sim-related="answers" ${examHidden ? 'disabled' : ''}>相似答案（${matchingGroups(q.id, 'answers').length} 組）</button><button class="button secondary" data-sim-related="questions" ${examHidden ? 'disabled' : ''}>相似題目（${matchingGroups(q.id, 'questions').length} 組）</button>${session.similarityGroupId ? '<button class="button ghost" id="similarityEndPractice">結束並查看本組追蹤</button>' : ''}</div>${examHidden ? '<span class="hint">測驗交卷後可查看集合對照。</span>' : ''}`;
+    box.innerHTML = `<span class="hint">點開即可對照相關題目與正確答案</span><div class="actions"><button class="button secondary" type="button" data-sim-related="answers" aria-expanded="false" aria-controls="similarityRelatedPanel" ${examHidden ? 'disabled' : ''}>相似答案（${relatedQuestions(q.id, 'answers').length} 題）</button><button class="button secondary" type="button" data-sim-related="questions" aria-expanded="false" aria-controls="similarityRelatedPanel" ${examHidden ? 'disabled' : ''}>相似題目（${relatedQuestions(q.id, 'questions').length} 題）</button>${session.similarityGroupId ? '<button class="button ghost" id="similarityEndPractice">結束並查看本組追蹤</button>' : ''}</div>${examHidden ? '<span class="hint">測驗交卷後可查看題目與答案對照。</span>' : ''}<div class="similarity-related-panel hidden" id="similarityRelatedPanel" role="region" aria-live="polite"></div>`;
     $('quiz').append(box);
     box.querySelectorAll('[data-sim-related]').forEach(button => button.onclick = () => openRelated(button.dataset.simRelated, q.id));
     $('similarityEndPractice')?.addEventListener('click', () => { session.questions.forEach((_, i) => recordSimilarityAnswer(session, i)); finishPartial(); });
