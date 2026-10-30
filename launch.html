@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#176b58">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="金融題庫">
+<link rel="apple-touch-icon" href="assets/quiz-icon.png">
+<title>開啟金融題庫最新版</title>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f3f6f4;color:#172a35;font-family:system-ui,sans-serif}main{max-width:32rem;padding:28px;text-align:center}a{color:#176b58}p{line-height:1.8}</style>
+</head>
+<body><main><h1>金融題庫</h1><p>正在開啟最新版本…</p><p><a href="index.html">直接開啟題庫</a></p><noscript><p>請啟用 JavaScript，才能使用練習與更新功能。</p></noscript></main>
+<script>
+(() => {
+  function openLatest() {
+    const target = new URL('index.html', location.href);
+    target.searchParams.set('from', 'webclip');
+    target.searchParams.set('_fresh', String(Date.now()));
+    location.replace(target.href);
+  }
+  window.addEventListener('pageshow', event => { if (event.persisted) openLatest(); });
+  openLatest();
+})();
+</script></body>
+</html>
