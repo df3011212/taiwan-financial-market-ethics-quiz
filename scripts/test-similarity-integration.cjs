@@ -187,8 +187,27 @@ function assertOfficialRelated(qid,kind) {
   assert.equal(new Set(ids).size,ids.length,'related question cards must be deduplicated');
   assert.ok(!ids.includes(qid),'the current question must be excluded');
   for(const card of cards) {
-    const official=JSON.parse(run(`JSON.stringify((()=>{const q=QUESTIONS.find(q=>q.id===${JSON.stringify(card.dataset.relatedQuestion)}),opts=choices(q.text);return {prompt:opts[0],letter:LETTERS[q.answer-1],answer:opts[q.answer]};})())`));
+    const official=JSON.parse(run(`JSON.stringify((()=>{const q=QUESTIONS.find(q=>q.id===${JSON.stringify(card.dataset.relatedQuestion)}),opts=choices(q.text);return {prompt:opts[0],letter:LETTERS[q.answer-1],answer:opts[q.answer],options:opts.slice(1),answerIndex:q.answer-1};})())`));
     assert.equal(card.querySelector('h4').textContent,official.prompt);
+    const options=card.querySelectorAll('[data-related-option]');
+    assert.equal(options.length,4,'each related question must display all four official options');
+    assert.equal(card.querySelectorAll('.correct').length,1,'exactly one related option must be marked correct');
+    const before=snapshotPractice();
+    options.forEach((option,index)=>{
+      assert.equal(option.tagName,'DIV','related options must be noninteractive elements');
+      assert.equal(option.dataset.relatedOption,String(index+1));
+      assert.equal(option.querySelector('.similarity-related-letter').textContent,['A','B','C','D'][index]);
+      assert.equal(option.querySelector('.similarity-related-option-text').textContent,official.options[index]);
+      assert.equal(option.classList.contains('correct'),index===official.answerIndex);
+      assert.equal(option.getAttribute('role'),null);
+      assert.equal(option.getAttribute('tabindex'),null);
+      const check=option.querySelector('.similarity-related-correct');
+      if(index===official.answerIndex) {assert.equal(check.textContent,'✓');assert.equal(check.getAttribute('aria-label'),'正確答案');}
+      else assert.equal(check,null);
+      option.click();
+      assertPracticeUnchanged(before);
+    });
+    for(const selector of ['[data-answer]','button','input'])assert.equal(card.querySelectorAll(selector).length,0,'related cards must never bind answer-selection controls');
     assert.equal(card.querySelector('.similarity-related-answer').textContent,`正確答案 ${official.letter}：${official.answer}`);
   }
   for(const selector of ['[data-sim-single]','[data-sim-practice]','[data-sim-group]','a']) {
