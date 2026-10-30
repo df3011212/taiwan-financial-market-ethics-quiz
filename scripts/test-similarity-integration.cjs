@@ -10,7 +10,7 @@ class Element {
   constructor(tag, doc) {
     this.tagName = tag.toUpperCase(); this.doc = doc; this.children = []; this.parentElement = null;
     this.attributes = {}; this.dataset = {}; this.style = {setProperty(k,v) {this[k]=v;}}; this.listeners = {};
-    this.disabled = false; this.value = ''; this._text = ''; this._html = ''; this._class = new Set();
+    this.disabled = false; this.value = ''; this.scrollTop = 0; this.scrollLeft = 0; this._text = ''; this._html = ''; this._class = new Set();
     this.classList = {add: (...xs) => xs.forEach(x=>this._class.add(x)), remove: (...xs) => xs.forEach(x=>this._class.delete(x)),
       contains: x=>this._class.has(x), toggle: (x,force)=> {const add = force === undefined ? !this._class.has(x) : force; add ? this._class.add(x) : this._class.delete(x); return add;}};
   }
@@ -30,6 +30,13 @@ class Element {
     if(k.startsWith('data-'))this.dataset[k.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]=decode(v);
   }
   getAttribute(k) {return this.attributes[k] ?? null;}
+  hasAttribute(k) {return this.attributes[k] !== undefined;}
+  removeAttribute(k) {
+    delete this.attributes[k];
+    if(k==='class')this.className='';
+    if(k==='disabled')this.disabled=false;
+    if(k.startsWith('data-'))delete this.dataset[k.slice(5).replace(/-([a-z])/g,(_,c)=>c.toUpperCase())];
+  }
   append(...nodes) {for(const n of nodes) {if(n.parentElement)n.parentElement.children=n.parentElement.children.filter(c=>c!==n);n.parentElement=this;this.children.push(n);}}
   prepend(...nodes) {for(const n of nodes.reverse()) {if(n.parentElement)n.parentElement.children=n.parentElement.children.filter(c=>c!==n);n.parentElement=this;this.children.unshift(n);}}
   before(node) {const p=this.parentElement;const i=p.children.indexOf(this);node.parentElement=p;p.children.splice(i,0,node);}
@@ -77,8 +84,16 @@ class Document extends Element {
 const document=new Document();
 parse(html.match(/<body>([\s\S]*?)<script>/)[1],document.body,document);
 const local=new Map();let token=0;
+const navigation=[];
+const location={
+  get href(){return 'http://localhost/test-quiz/';},
+  set href(value){navigation.push(['href',value]);},
+  assign(value){navigation.push(['assign',value]);},
+  replace(value){navigation.push(['replace',value]);}
+};
 const sandbox={document,console,URL,Blob,Date,Math,Set,Map,clearTimeout(){},setTimeout(){return 1;},
   requestAnimationFrame(fn){fn();},innerWidth:1200,devicePixelRatio:1,
+  location,open(...args){navigation.push(['open',...args]);},
   crypto:{randomUUID(){return 'test-run-'+(++token);}},
   localStorage:{getItem(k){return local.get(k)||null;},setItem(k,v){local.set(k,v);}},
   speechSynthesis:{cancel(){},speak(){},pause(){},resume(){},paused:false},
@@ -148,15 +163,129 @@ test('result link opens the requested group beyond page one',()=>{
   const title=run(`SFI_SIMILARITY.groups.find(g=>g.id===${JSON.stringify(groupId)}).title`);
   assert.ok(document.getElementById('similarityDetail').textContent.includes(title));
 });
-test('related comparison returns to the same active practice without counting a new attempt',()=>{
-  choose('金融市場常識-033');run('session.answers[0]=session.questions[0].answer;renderQuestion();');
-  const active=run('session');
-  const before=stat('金融市場常識-033','attempts');
-  document.getElementById('quiz').querySelector('[data-sim-related]').click();
-  assert.equal(document.getElementById('similarityBack').textContent,'返回目前練習');
-  document.getElementById('similarityBack').click();
-  assert.equal(run('session'),active);assert.equal(stat('金融市場常識-033','attempts'),before);
-  assert.equal(document.getElementById('study').classList.contains('hidden'),false);
+function beginAt(number,mode='practice') {
+  run(`$('similarity').classList.add('hidden');$('shell').classList.remove('similarity-wide');
+    $('pdfPanel').classList.add('hidden');$('category').value='金融市場常識';$('startAt').value=${number};
+    $('amount').value='10';$('order').value='sequence';$('mode').value=${JSON.stringify(mode)};begin();`);
+}
+function relatedButton(kind) {
+  return document.getElementById('quiz').querySelectorAll('[data-sim-related]').find(button=>button.dataset.simRelated===kind);
+}
+function relatedPanel() {return document.getElementById('similarityRelatedPanel');}
+function expectedRelated(qid,kind) {
+  return JSON.parse(run(`JSON.stringify([...new Set(SFI_SIMILARITY_UI.allGroups()
+    .filter(g=>g.kind===${JSON.stringify(kind)}&&g.questionIds.includes(${JSON.stringify(qid)}))
+    .flatMap(g=>g.questionIds))].filter(id=>id!==${JSON.stringify(qid)}&&QUESTIONS.some(q=>q.id===id)))`));
+}
+function assertOfficialRelated(qid,kind) {
+  const panel=relatedPanel();
+  assert.ok(panel&&!panel.classList.contains('hidden'),'related panel should be visible below the question');
+  assert.equal(panel.dataset.kind,kind);
+  const cards=panel.querySelectorAll('[data-related-question]');
+  const ids=cards.map(card=>card.dataset.relatedQuestion);
+  assert.deepEqual([...ids].sort(),expectedRelated(qid,kind).sort());
+  assert.equal(new Set(ids).size,ids.length,'related question cards must be deduplicated');
+  assert.ok(!ids.includes(qid),'the current question must be excluded');
+  for(const card of cards) {
+    const official=JSON.parse(run(`JSON.stringify((()=>{const q=QUESTIONS.find(q=>q.id===${JSON.stringify(card.dataset.relatedQuestion)}),opts=choices(q.text);return {prompt:opts[0],letter:LETTERS[q.answer-1],answer:opts[q.answer]};})())`));
+    assert.equal(card.querySelector('h4').textContent,official.prompt);
+    assert.equal(card.querySelector('.similarity-related-answer').textContent,`正確答案 ${official.letter}：${official.answer}`);
+  }
+  for(const selector of ['[data-sim-single]','[data-sim-practice]','[data-sim-group]','a']) {
+    assert.equal(panel.querySelectorAll(selector).length,0,'inline cards must not contain practice or group navigation');
+  }
+  assert.ok(!/單題練習|練習本組|追蹤這一組/.test(panel.textContent));
+  assert.equal(relatedButton(kind).getAttribute('aria-expanded'),'true');
+  assert.equal(relatedButton(kind).getAttribute('aria-controls'),'similarityRelatedPanel');
+}
+function snapshotPractice() {
+  return {session:run('session'),questions:run('session.questions'),answers:run('session.answers'),checked:run('session.checked'),
+    serialized:run('JSON.stringify(session)'),tracker:run('JSON.stringify(SFI_TRACKER.exportData())'),
+    questionElement:document.getElementById('quiz').querySelector('.question'),
+    optionElements:document.getElementById('quiz').querySelectorAll('[data-answer]'),
+    scroll:['quiz','pdfScroll'].map(id=>[id,document.getElementById(id).scrollTop,document.getElementById(id).scrollLeft]),
+    classes:['shell','study','pdfPanel','quiz','setup','bank','result','similarity'].map(id=>[id,document.getElementById(id).className]),
+    navigation:navigation.length};
+}
+function assertPracticeUnchanged(before) {
+  assert.equal(run('session'),before.session);assert.equal(run('session.questions'),before.questions);
+  assert.equal(run('session.answers'),before.answers);assert.equal(run('session.checked'),before.checked);
+  assert.equal(run('JSON.stringify(session)'),before.serialized,'session/index/selection/checked must remain unchanged');
+  assert.equal(run('JSON.stringify(SFI_TRACKER.exportData())'),before.tracker,'comparison must not record attempts');
+  assert.equal(document.getElementById('quiz').querySelector('.question'),before.questionElement,'opening comparison must not rerender the current question');
+  document.getElementById('quiz').querySelectorAll('[data-answer]').forEach((element,index)=>assert.equal(element,before.optionElements[index],'answer buttons must remain the same DOM nodes'));
+  for(const [id,top,left] of before.scroll) {assert.equal(document.getElementById(id).scrollTop,top);assert.equal(document.getElementById(id).scrollLeft,left);}
+  for(const [id,className] of before.classes)assert.equal(document.getElementById(id).className,className,`${id} layout/visibility must remain unchanged`);
+  assert.equal(navigation.length,before.navigation,'comparison must not navigate or open another window');
+}
+function assertRelatedCollapsed() {
+  assert.ok(relatedPanel().classList.contains('hidden'));
+  assert.equal(relatedPanel().querySelectorAll('[data-related-question]').length,0);
+  assert.equal(relatedPanel().querySelectorAll('.similarity-related-answer').length,0);
+  for(const button of document.getElementById('quiz').querySelectorAll('[data-sim-related]'))assert.equal(button.getAttribute('aria-expanded'),'false');
+}
+test('q171 answer comparison expands inline with official answers, deduplication, and no practice navigation',()=>{
+  beginAt(171);
+  document.getElementById('quiz').querySelectorAll('[data-answer]')[1].click();
+  // Overlapping groups must still produce one card per related question.
+  run("SFI_SIMILARITY.groups.push({id:'test-overlapping-underwriting',kind:'answers',title:'test duplicate coverage',description:'',questionIds:['金融市場常識-171','金融市場常識-168']});");
+  assertRelatedCollapsed();
+  const before=snapshotPractice();
+  relatedButton('answers').click();assertOfficialRelated('金融市場常識-171','answers');
+  assertPracticeUnchanged(before);
+  assert.equal(relatedPanel().querySelectorAll('[data-related-question]').length,2);
+  run("SFI_SIMILARITY.groups.splice(SFI_SIMILARITY.groups.findIndex(g=>g.id==='test-overlapping-underwriting'),1);");
+});
+test('switching q171 comparison type updates one inline panel; clicking again collapses it',()=>{
+  const before=snapshotPractice();
+  relatedButton('questions').click();assertOfficialRelated('金融市場常識-171','questions');
+  assert.equal(relatedButton('answers').getAttribute('aria-expanded'),'false');
+  assertPracticeUnchanged(before);
+  relatedButton('questions').click();assertRelatedCollapsed();assertPracticeUnchanged(before);
+  relatedButton('answers').click();document.getElementById('similarityRelatedClose').click();
+  assertRelatedCollapsed();assertPracticeUnchanged(before);
+});
+test('inline comparison preserves the visible PDF pane and active quiz layout',()=>{
+  run("$('pdfPanel').classList.remove('hidden');$('study').classList.remove('single-column');$('shell').classList.add('wide');");
+  run("$('pdfScroll').scrollTop=180;$('quiz').scrollTop=94;");
+  const before=snapshotPractice();relatedButton('answers').click();assertOfficialRelated('金融市場常識-171','answers');
+  assertPracticeUnchanged(before);
+  document.getElementById('similarityRelatedClose').click();assertPracticeUnchanged(before);
+  // Restore the ordinary quiz layout before exercising real question rendering.
+  run("$('pdfPanel').classList.add('hidden');$('study').classList.add('single-column');$('shell').classList.remove('wide');");
+});
+test('next and previous question navigation discards the prior inline comparison',()=>{
+  relatedButton('answers').click();assertOfficialRelated('金融市場常識-171','answers');
+  document.getElementById('next').click();assert.equal(run('session.questions[session.index].number'),172);
+  assertRelatedCollapsed();
+  relatedButton('questions').click();
+  document.getElementById('previous').click();assert.equal(run('session.questions[session.index].number'),171);
+  assertRelatedCollapsed();
+});
+test('confirming an answer clears old inline cards and preserves the submitted selection',()=>{
+  relatedButton('answers').click();assertOfficialRelated('金融市場常識-171','answers');
+  const selected=run('session.answers[session.index]');document.getElementById('check').click();
+  assert.equal(run('session.checked[session.index]'),true);assert.equal(run('session.answers[session.index]'),selected);
+  assertRelatedCollapsed();
+});
+test('exam comparison controls and their handlers cannot expose official answers before submission',()=>{
+  beginAt(171,'exam');const before=snapshotPractice();
+  for(const kind of ['answers','questions']) {
+    const button=relatedButton(kind);assert.equal(button.disabled,true);button.click();
+    assertRelatedCollapsed();button.onclick();assertRelatedCollapsed();
+  }
+  assertPracticeUnchanged(before);
+});
+test('a question with zero related questions expands a safe empty state inline',()=>{
+  beginAt(2);assert.deepEqual(expectedRelated('金融市場常識-002','answers'),[]);
+  assert.deepEqual(expectedRelated('金融市場常識-002','questions'),[]);
+  const before=snapshotPractice();
+  for(const kind of ['answers','questions']) {
+    relatedButton(kind).click();assertOfficialRelated('金融市場常識-002',kind);
+    assert.ok(relatedPanel().textContent.includes('目前沒有其他可對照的題目。'));
+    assert.equal(relatedPanel().querySelectorAll('.similarity-related-answer').length,0);
+    assertPracticeUnchanged(before);
+  }
 });
 test('empty tracked list is safe and both pagination buttons are disabled',()=>{
   run("SFI_SIMILARITY_UI.open('tracked');");
